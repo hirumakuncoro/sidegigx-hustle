@@ -52,14 +52,17 @@ type APIResponse struct {
 }
 
 const (
-	apiURL		 = "https://api.sidegigx.id/api/v1/gigs?feedMode=explore&sort=latest&page=1&limit=10"
-	pollInterval = 1 * time.Minute
+	apiURL          = "https://api.sidegigx.id/api/v1/gigs?feedMode=explore&sort=latest&page=1&limit=10"
+	pollInterval    = 1 * time.Minute
+	revivedThreshold = 3 // blacklist otomatis setelah bangkit sebanyak N kali
 )
 
 var knownGigIDs = make(map[string]bool)
 var allGigs = make(map[string]Gig)
-var lastSeenAt = make(map[string]time.Time)   // kapan terakhir gig ini ada di API
-var activeGigIDs = make(map[string]bool)       // gig yang ADA di response terakhir
+var lastSeenAt = make(map[string]time.Time) // kapan terakhir gig ini ada di API
+var activeGigIDs = make(map[string]bool)    // gig yang ADA di response terakhir
+var revivedCounts = make(map[string]int)    // berapa kali gig ini bangkit kembali
+var blacklist = make(map[string]bool)       // gig yang sudah diblacklist
 var telegramBotToken string
 
 const telegramChatID = "1131652151"
@@ -111,13 +114,20 @@ func checkForNewGigs() {
 
 	newCount := 0
 	revivedCount := 0
+	skippedBlacklist := 0
 
 	currentIDs := make(map[string]bool)
 	for _, gig := range gigs {
 		currentIDs[gig.ID] = true
 	}
-	
+
 	for _, gig := range gigs {
+		// Skip gig yang sudah diblacklist
+		if blacklist[gig.ID] {
+			skippedBlacklist++
+			continue
+		}
+
 		wasActive := activeGigIDs[gig.ID]
 		isNew := !knownGigIDs[gig.ID]
 
@@ -133,12 +143,23 @@ func checkForNewGigs() {
 			}
 		} else if !wasActive {
 			// Gig lama yang sempat hilang dari API, sekarang muncul lagi
+			revivedCounts[gig.ID]++
 			allGigs[gig.ID] = gig
 			lastSeenAt[gig.ID] = time.Now()
 			revivedCount++
-			printRevivedGig(gig)
-			if err := sendTelegramNotificationRevived(gig); err != nil {
-				log.Printf("❌ Gagal kirim Telegram (revived): %v\n", err)
+
+			if revivedCounts[gig.ID] >= revivedThreshold {
+				// Sudah bangkit terlalu sering — masukkan blacklist
+				blacklist[gig.ID] = true
+				printBlacklisted(gig, revivedCounts[gig.ID])
+				if err := sendTelegramNotificationBlacklisted(gig, revivedCounts[gig.ID]); err != nil {
+					log.Printf("❌ Gagal kirim Telegram (blacklist): %v\n", err)
+				}
+			} else {
+				printRevivedGig(gig, revivedCounts[gig.ID])
+				if err := sendTelegramNotificationRevived(gig, revivedCounts[gig.ID]); err != nil {
+					log.Printf("❌ Gagal kirim Telegram (revived): %v\n", err)
+				}
 			}
 		} else {
 			// Gig masih aktif seperti biasa
@@ -157,18 +178,30 @@ func checkForNewGigs() {
 	if revivedCount > 0 {
 		fmt.Printf("♻️  Ditemukan %d gig bangkit kembali!\n", revivedCount)
 	}
+	if skippedBlacklist > 0 {
+		fmt.Printf("🚫 Dilewati (blacklist): %d gig\n", skippedBlacklist)
+	}
 
-	fmt.Printf("📊 Total gig di memori: %d\n", len(allGigs))
+	fmt.Printf("📊 Total gig di memori: %d | Blacklist: %d\n", len(allGigs), len(blacklist))
 }
 
-func printRevivedGig(g Gig) {
+func printRevivedGig(g Gig, count int) {
 	fmt.Println("─────────────────────────────────────────")
-	fmt.Printf("♻️  GIG BANGKIT KEMBALI (TERSEDIA LAGI)!\n")
+	fmt.Printf("♻️  GIG BANGKIT KEMBALI (ke-%d) — threshold: %d\n", count, revivedThreshold)
 	fmt.Printf("   ID       : %s\n", g.ID)
 	fmt.Printf("   Judul    : %s\n", g.Title)
 	fmt.Printf("   Poster   : %s\n", g.Poster.FullName)
 	fmt.Printf("   Budget   : %s %d\n", g.Currency, g.BudgetAmount)
 	fmt.Printf("   Status   : %s\n", g.Status)
+	fmt.Println("─────────────────────────────────────────")
+}
+
+func printBlacklisted(g Gig, count int) {
+	fmt.Println("─────────────────────────────────────────")
+	fmt.Printf("🚫 GIG DIBLACKLIST (bangkit %d kali, melebihi threshold %d)\n", count, revivedThreshold)
+	fmt.Printf("   ID       : %s\n", g.ID)
+	fmt.Printf("   Judul    : %s\n", g.Title)
+	fmt.Printf("   Poster   : %s\n", g.Poster.FullName)
 	fmt.Println("─────────────────────────────────────────")
 }
 
@@ -216,9 +249,17 @@ func sendTelegramNotification(g Gig) error {
 	return sendTelegramMessage(text)
 }
 
-func sendTelegramNotificationRevived(g Gig) error {
-	text := fmt.Sprintf("♻️ <b>Gig Tersedia Lagi!</b>\n📌 <b>%s</b>\n📝 %s\n💰 %s %d\n👤 %s\n🏙️ %s",
+func sendTelegramNotificationRevived(g Gig, count int) error {
+	text := fmt.Sprintf("♻️ <b>Gig Tersedia Lagi!</b> (ke-%d, batas: %d)\n📌 <b>%s</b>\n📝 %s\n💰 %s %d\n👤 %s\n🏙️ %s",
+		count, revivedThreshold,
 		g.Title, g.Description, g.Currency, g.BudgetAmount, g.Poster.FullName, g.City,
+	)
+	return sendTelegramMessage(text)
+}
+
+func sendTelegramNotificationBlacklisted(g Gig, count int) error {
+	text := fmt.Sprintf("🚫 <b>Gig Diblacklist</b>\nBangkit %d kali, tidak akan dinotifikasi lagi.\n📌 <b>%s</b>\n👤 %s",
+		count, g.Title, g.Poster.FullName,
 	)
 	return sendTelegramMessage(text)
 }
@@ -232,8 +273,9 @@ func main() {
 	fmt.Println("╔══════════════════════════════════════╗")
 	fmt.Println("║   SideGigX Monitor - Mulai Jalan!    ║")
 	fmt.Println("╚══════════════════════════════════════╝")
-	fmt.Printf("🔗 Endpoint : %s\n", apiURL)
-	fmt.Printf("⏱️  Interval : setiap %s\n\n", pollInterval)
+	fmt.Printf("🔗 Endpoint  : %s\n", apiURL)
+	fmt.Printf("⏱️  Interval  : setiap %s\n", pollInterval)
+	fmt.Printf("🚫 Threshold : blacklist setelah bangkit %dx\n\n", revivedThreshold)
 
 	checkForNewGigs()
 
