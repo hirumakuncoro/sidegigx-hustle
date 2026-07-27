@@ -59,7 +59,7 @@ type APIResponse struct {
 const (
 	apiURL           = "https://api.sidegigx.id/api/v1/gigs?feedMode=explore&sort=latest&page=1&limit=10"
 	pollInterval     = 1 * time.Minute
-	revivedThreshold = 1 // blacklist otomatis setelah bangkit sebanyak N kali
+	revivedThreshold = 2 // blacklist otomatis setelah gig muncul lagi sebanyak N kali
 )
 
 var telegramBotToken string
@@ -312,9 +312,6 @@ func checkForNewGigs(store *Store) {
 			if blacklisted {
 				// Sudah bangkit terlalu sering — masukkan blacklist
 				printBlacklisted(gig, revivedCountForGig)
-				if err := sendTelegramNotificationBlacklisted(gig, revivedCountForGig); err != nil {
-					log.Printf("❌ Gagal kirim Telegram (blacklist): %v\n", err)
-				}
 			} else {
 				printRevivedGig(gig, revivedCountForGig)
 				if err := sendTelegramNotificationRevived(gig, revivedCountForGig); err != nil {
@@ -392,27 +389,35 @@ func sendTelegramMessages(text string) error {
 		return nil
 	}
 	var errs []string
-	apiEndpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", telegramBotToken)
 	for _, chatID := range telegramChatIDs {
-		values := url.Values{}
-		values.Set("chat_id", chatID)
-		values.Set("text", text)
-		values.Set("parse_mode", "HTML")
-
-		resp, err := http.PostForm(apiEndpoint, values)
-		if err != nil {
+		if err := sendTelegramMessage(chatID, text); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", chatID, err))
-			continue
 		}
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			errs = append(errs, fmt.Sprintf("%s: %d %s", chatID, resp.StatusCode, string(body)))
-		}
-		resp.Body.Close()
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("gagal kirim ke: %s", strings.Join(errs, "; "))
 	}
+	return nil
+}
+
+func sendTelegramMessage(chatID string, text string) error {
+	apiEndpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", telegramBotToken)
+	values := url.Values{}
+	values.Set("chat_id", chatID)
+	values.Set("text", text)
+	values.Set("parse_mode", "HTML")
+
+	resp, err := http.PostForm(apiEndpoint, values)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%d %s", resp.StatusCode, string(body))
+	}
+
 	return nil
 }
 
@@ -427,13 +432,6 @@ func sendTelegramNotificationRevived(g Gig, count int) error {
 	text := fmt.Sprintf("♻️ <b>GIG TERSEDIA LAGI!</b> (ke-%d, batas: %d)\n<b>%s</b>\n\n%s\n%s %d",
 		count, revivedThreshold,
 		g.Title, g.Description, g.Currency, g.BudgetAmount,
-	)
-	return sendTelegramMessages(text)
-}
-
-func sendTelegramNotificationBlacklisted(g Gig, count int) error {
-	text := fmt.Sprintf("🚫 <b>GIG DIBLACKLIST</b>\nBangkit %d kali, tidak akan dinotifikasi lagi.\n📌 <b>%s</b>",
-		count, g.Title,
 	)
 	return sendTelegramMessages(text)
 }

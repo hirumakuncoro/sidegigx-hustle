@@ -70,7 +70,7 @@ docker run --rm \
    - **Gig Baru**: Belum pernah terlihat. Simpan ke SQLite, kirim notifikasi Telegram "Gig Baru!".
    - **Gig Aktif**: Masih ada dari cek sebelumnya. Biarkan.
    - **Gig Bangkit (Revived)**: Sempat hilang tapi muncul lagi. Kirim notifikasi "Gig Tersedia Lagi!".
-4. **Blacklist Otomatis**: Jika gig hilang-timbul (bangkit) 1 kali, masuk daftar blacklist. Kirim notifikasi "Gig Diblacklist" lalu abaikan selamanya.
+4. **Blacklist Otomatis**: Jika gig hilang-timbul (bangkit) 2 kali, masuk daftar blacklist tanpa notifikasi Telegram, lalu abaikan selamanya.
 5. **Ulangi**: Tunggu 1 menit, kembali ke langkah 2.
 
 ## Catatan
