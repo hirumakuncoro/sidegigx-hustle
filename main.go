@@ -59,7 +59,7 @@ type APIResponse struct {
 const (
 	apiURL           = "https://api.sidegigx.id/api/v1/gigs?feedMode=explore&sort=latest&page=1&limit=10"
 	appGigURL        = "https://app.sidegigx.id/gig"
-	pollInterval     = 1 * time.Minute
+	pollInterval     = 30 * time.Second
 	revivedThreshold = 2 // blacklist otomatis setelah gig muncul lagi sebanyak N kali
 )
 
