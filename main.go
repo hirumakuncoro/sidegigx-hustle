@@ -1,16 +1,19 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
-	"math/rand"
+
+	_ "modernc.org/sqlite"
 )
 
 type Poster struct {
@@ -54,20 +57,154 @@ type APIResponse struct {
 }
 
 const (
-	apiURL          = "https://api.sidegigx.id/api/v1/gigs?feedMode=explore&sort=latest&page=1&limit=10"
-	pollInterval    = 1 * time.Minute
+	apiURL           = "https://api.sidegigx.id/api/v1/gigs?feedMode=explore&sort=latest&page=1&limit=10"
+	pollInterval     = 1 * time.Minute
 	revivedThreshold = 1 // blacklist otomatis setelah bangkit sebanyak N kali
 )
 
-var knownGigIDs = make(map[string]bool)
-var allGigs = make(map[string]Gig)
-var lastSeenAt = make(map[string]time.Time) // kapan terakhir gig ini ada di API
-var activeGigIDs = make(map[string]bool)    // gig yang ADA di response terakhir
-var revivedCounts = make(map[string]int)    // berapa kali gig ini bangkit kembali
-var blacklist = make(map[string]bool)       // gig yang sudah diblacklist
 var telegramBotToken string
 
 var telegramChatIDs = []string{"1131652151"}
+
+type StoredGig struct {
+	Gig          Gig
+	Active       bool
+	RevivedCount int
+	Blacklisted  bool
+}
+
+type Store struct {
+	db *sql.DB
+}
+
+func NewStore(path string) (*Store, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, fmt.Errorf("gagal buka database: %w", err)
+	}
+
+	store := &Store{db: db}
+	if err := store.init(); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return store, nil
+}
+
+func (s *Store) Close() error {
+	return s.db.Close()
+}
+
+func (s *Store) init() error {
+	_, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS gigs (
+			id TEXT PRIMARY KEY,
+			gig_json TEXT NOT NULL,
+			last_seen_at TEXT NOT NULL,
+			active INTEGER NOT NULL DEFAULT 0,
+			revived_count INTEGER NOT NULL DEFAULT 0,
+			blacklisted INTEGER NOT NULL DEFAULT 0
+		);
+	`)
+	if err != nil {
+		return fmt.Errorf("gagal init database: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetGig(id string) (StoredGig, bool, error) {
+	var stored StoredGig
+	var gigJSON string
+	var active, blacklisted int
+
+	err := s.db.QueryRow(`
+		SELECT gig_json, active, revived_count, blacklisted
+		FROM gigs
+		WHERE id = ?
+	`, id).Scan(&gigJSON, &active, &stored.RevivedCount, &blacklisted)
+	if err == sql.ErrNoRows {
+		return StoredGig{}, false, nil
+	}
+	if err != nil {
+		return StoredGig{}, false, fmt.Errorf("gagal ambil gig %s: %w", id, err)
+	}
+	if err := json.Unmarshal([]byte(gigJSON), &stored.Gig); err != nil {
+		return StoredGig{}, false, fmt.Errorf("gagal parse gig %s dari database: %w", id, err)
+	}
+
+	stored.Active = active == 1
+	stored.Blacklisted = blacklisted == 1
+	return stored, true, nil
+}
+
+func (s *Store) SaveGig(gig Gig, active bool, revivedCount int, blacklisted bool) error {
+	gigJSON, err := json.Marshal(gig)
+	if err != nil {
+		return fmt.Errorf("gagal encode gig %s: %w", gig.ID, err)
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO gigs (id, gig_json, last_seen_at, active, revived_count, blacklisted)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			gig_json = excluded.gig_json,
+			last_seen_at = excluded.last_seen_at,
+			active = excluded.active,
+			revived_count = excluded.revived_count,
+			blacklisted = excluded.blacklisted
+	`, gig.ID, string(gigJSON), time.Now().Format(time.RFC3339), boolToInt(active), revivedCount, boolToInt(blacklisted))
+	if err != nil {
+		return fmt.Errorf("gagal simpan gig %s: %w", gig.ID, err)
+	}
+
+	return nil
+}
+
+func (s *Store) ReplaceActiveGigs(ids map[string]bool) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("gagal mulai transaksi: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`UPDATE gigs SET active = 0`); err != nil {
+		return fmt.Errorf("gagal reset gig aktif: %w", err)
+	}
+
+	stmt, err := tx.Prepare(`UPDATE gigs SET active = 1 WHERE id = ?`)
+	if err != nil {
+		return fmt.Errorf("gagal siapkan update gig aktif: %w", err)
+	}
+	defer stmt.Close()
+
+	for id := range ids {
+		if _, err := stmt.Exec(id); err != nil {
+			return fmt.Errorf("gagal update gig aktif %s: %w", id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("gagal commit gig aktif: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) Counts() (total int, blacklisted int, err error) {
+	err = s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(blacklisted), 0) FROM gigs`).Scan(&total, &blacklisted)
+	if err != nil {
+		return 0, 0, fmt.Errorf("gagal hitung gig: %w", err)
+	}
+	return total, blacklisted, nil
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
 
 func randomFakeIP() string {
 	return fmt.Sprintf("%d.%d.%d.%d",
@@ -114,7 +251,7 @@ func fetchGigs() ([]Gig, error) {
 	return apiResp.Data, nil
 }
 
-func checkForNewGigs() {
+func checkForNewGigs(store *Store) {
 	now := time.Now().Format("2006-01-02 15:04:05")
 	fmt.Printf("\n[%s] 🔍 Mengecek gig terbaru...\n", now)
 
@@ -136,20 +273,27 @@ func checkForNewGigs() {
 	}
 
 	for _, gig := range gigs {
+		stored, exists, err := store.GetGig(gig.ID)
+		if err != nil {
+			log.Printf("❌ Gagal baca database: %v\n", err)
+			continue
+		}
+
 		// Skip gig yang sudah diblacklist
-		if blacklist[gig.ID] {
+		if stored.Blacklisted {
 			skippedBlacklist++
 			continue
 		}
 
-		wasActive := activeGigIDs[gig.ID]
-		isNew := !knownGigIDs[gig.ID]
+		wasActive := stored.Active
+		isNew := !exists
 
 		if isNew {
 			// Gig benar-benar baru, belum pernah kelihatan sebelumnya
-			knownGigIDs[gig.ID] = true
-			allGigs[gig.ID] = gig
-			lastSeenAt[gig.ID] = time.Now()
+			if err := store.SaveGig(gig, true, 0, false); err != nil {
+				log.Printf("❌ Gagal simpan gig baru: %v\n", err)
+				continue
+			}
 			newCount++
 			printNewGig(gig)
 			if err := sendTelegramNotification(gig); err != nil {
@@ -157,32 +301,38 @@ func checkForNewGigs() {
 			}
 		} else if !wasActive {
 			// Gig lama yang sempat hilang dari API, sekarang muncul lagi
-			revivedCounts[gig.ID]++
-			allGigs[gig.ID] = gig
-			lastSeenAt[gig.ID] = time.Now()
+			revivedCountForGig := stored.RevivedCount + 1
+			blacklisted := revivedCountForGig >= revivedThreshold
+			if err := store.SaveGig(gig, true, revivedCountForGig, blacklisted); err != nil {
+				log.Printf("❌ Gagal simpan gig revived: %v\n", err)
+				continue
+			}
 			revivedCount++
 
-			if revivedCounts[gig.ID] >= revivedThreshold {
+			if blacklisted {
 				// Sudah bangkit terlalu sering — masukkan blacklist
-				blacklist[gig.ID] = true
-				printBlacklisted(gig, revivedCounts[gig.ID])
-				if err := sendTelegramNotificationBlacklisted(gig, revivedCounts[gig.ID]); err != nil {
+				printBlacklisted(gig, revivedCountForGig)
+				if err := sendTelegramNotificationBlacklisted(gig, revivedCountForGig); err != nil {
 					log.Printf("❌ Gagal kirim Telegram (blacklist): %v\n", err)
 				}
 			} else {
-				printRevivedGig(gig, revivedCounts[gig.ID])
-				if err := sendTelegramNotificationRevived(gig, revivedCounts[gig.ID]); err != nil {
+				printRevivedGig(gig, revivedCountForGig)
+				if err := sendTelegramNotificationRevived(gig, revivedCountForGig); err != nil {
 					log.Printf("❌ Gagal kirim Telegram (revived): %v\n", err)
 				}
 			}
 		} else {
 			// Gig masih aktif seperti biasa
-			allGigs[gig.ID] = gig
-			lastSeenAt[gig.ID] = time.Now()
+			if err := store.SaveGig(gig, true, stored.RevivedCount, false); err != nil {
+				log.Printf("❌ Gagal update gig aktif: %v\n", err)
+				continue
+			}
 		}
 	}
 
-	activeGigIDs = currentIDs
+	if err := store.ReplaceActiveGigs(currentIDs); err != nil {
+		log.Printf("❌ Gagal update daftar gig aktif: %v\n", err)
+	}
 
 	if newCount == 0 {
 		fmt.Println("✅ Tidak ada gig baru.")
@@ -196,7 +346,13 @@ func checkForNewGigs() {
 		fmt.Printf("🚫 Dilewati (blacklist): %d gig\n", skippedBlacklist)
 	}
 
-	fmt.Printf("📊 Total gig di memori: %d | Blacklist: %d\n", len(allGigs), len(blacklist))
+	total, blacklisted, err := store.Counts()
+	if err != nil {
+		log.Printf("❌ Gagal hitung database: %v\n", err)
+		return
+	}
+
+	fmt.Printf("📊 Total gig di database: %d | Blacklist: %d\n", total, blacklisted)
 }
 
 func printRevivedGig(g Gig, count int) {
@@ -284,24 +440,35 @@ func sendTelegramNotificationBlacklisted(g Gig, count int) error {
 
 func main() {
 	telegramBotToken = os.Getenv("TELEGRAM_BOT_TOKEN")
-	telegramBotToken = "8879482087:AAEum68pH22IW8jM1Yo9aVF7MmJ5DOMadjs"
 	if telegramBotToken == "" {
 		log.Println("⚠️  TELEGRAM_BOT_TOKEN tidak diset. Notifikasi Telegram akan dinonaktifkan.")
 	}
+
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "sidegigx.db"
+	}
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		log.Fatalf("❌ Gagal setup database: %v", err)
+	}
+	defer store.Close()
 
 	fmt.Println("╔══════════════════════════════════════╗")
 	fmt.Println("║   SideGigX Monitor - Mulai Jalan!    ║")
 	fmt.Println("╚══════════════════════════════════════╝")
 	fmt.Printf("🔗 Endpoint  : %s\n", apiURL)
-	fmt.Printf("⏱️  Interval  : setiap %s\n", pollInterval)
+	fmt.Printf("⏱️ Interval  : setiap %s\n", pollInterval)
+	fmt.Printf("💾 Database  : %s\n", dbPath)
 	fmt.Printf("🚫 Threshold : blacklist setelah bangkit %dx\n\n", revivedThreshold)
 
-	checkForNewGigs()
+	checkForNewGigs(store)
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		checkForNewGigs()
+		checkForNewGigs(store)
 	}
 }

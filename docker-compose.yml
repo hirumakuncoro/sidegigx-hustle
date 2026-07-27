@@ -1,0 +1,13 @@
+services:
+  gigwatch:
+    build: .
+    container_name: gigwatch
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - DB_PATH=/data/sidegigx.db
+    volumes:
+      - sidegigx-data:/data
+    restart: unless-stopped
+
+volumes:
+  sidegigx-data:
