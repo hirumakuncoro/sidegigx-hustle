@@ -64,7 +64,7 @@ const (
 
 var telegramBotToken string
 
-var telegramChatIDs = []string{"1131652151"}
+var telegramChatIDs = []string{"1131652151", "6494495144", "1809470127"}
 
 type StoredGig struct {
 	Gig          Gig
