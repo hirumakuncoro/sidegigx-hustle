@@ -55,7 +55,7 @@ type APIResponse struct {
 const (
 	apiURL          = "https://api.sidegigx.id/api/v1/gigs?feedMode=explore&sort=latest&page=1&limit=10"
 	pollInterval    = 1 * time.Minute
-	revivedThreshold = 3 // blacklist otomatis setelah bangkit sebanyak N kali
+	revivedThreshold = 1 // blacklist otomatis setelah bangkit sebanyak N kali
 )
 
 var knownGigIDs = make(map[string]bool)
@@ -66,7 +66,7 @@ var revivedCounts = make(map[string]int)    // berapa kali gig ini bangkit kemba
 var blacklist = make(map[string]bool)       // gig yang sudah diblacklist
 var telegramBotToken string
 
-var telegramChatIDs = []string{"1131652151", "1809470127"}
+var telegramChatIDs = []string{"1131652151"}
 
 func fetchGigs() ([]Gig, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
@@ -193,7 +193,6 @@ func printRevivedGig(g Gig, count int) {
 	fmt.Printf("   Judul    : %s\n", g.Title)
 	fmt.Printf("   Poster   : %s\n", g.Poster.FullName)
 	fmt.Printf("   Budget   : %s %d\n", g.Currency, g.BudgetAmount)
-	fmt.Printf("   Status   : %s\n", g.Status)
 	fmt.Println("─────────────────────────────────────────")
 }
 
@@ -215,7 +214,6 @@ func printNewGig(g Gig) {
 	fmt.Printf("   Poster   : %s\n", g.Poster.FullName)
 	fmt.Printf("   Kategori : %s\n", g.CategoryID.Name)
 	fmt.Printf("   Budget   : %s %d\n", g.Currency, g.BudgetAmount)
-	fmt.Printf("   Status   : %s\n", g.Status)
 	fmt.Printf("   Dibuat   : %s\n", g.CreatedAt.Local().Format("02 Jan 2006 15:04:05"))
 	fmt.Println("─────────────────────────────────────────")
 }
@@ -250,29 +248,30 @@ func sendTelegramMessages(text string) error {
 }
 
 func sendTelegramNotification(g Gig) error {
-	text := fmt.Sprintf("🆕 <b>Gig Baru!</b>\n📌 <b>%s</b>\n📝 %s\n💰 %s %d\n👤 %s\n🏙️ %s",
-		g.Title, g.Description, g.Currency, g.BudgetAmount, g.Poster.FullName, g.City,
+	text := fmt.Sprintf("🆕 <b>GIG BARU!</b>\n<b>%s</b>\n\n%s\n%s %d",
+		g.Title, g.Description, g.Currency, g.BudgetAmount,
 	)
 	return sendTelegramMessages(text)
 }
 
 func sendTelegramNotificationRevived(g Gig, count int) error {
-	text := fmt.Sprintf("♻️ <b>Gig Tersedia Lagi!</b> (ke-%d, batas: %d)\n📌 <b>%s</b>\n📝 %s\n💰 %s %d\n👤 %s\n🏙️ %s",
+	text := fmt.Sprintf("♻️ <b>GIG TERSEDIA LAGI!</b> (ke-%d, batas: %d)\n<b>%s</b>\n\n%s\n%s %d",
 		count, revivedThreshold,
-		g.Title, g.Description, g.Currency, g.BudgetAmount, g.Poster.FullName, g.City,
+		g.Title, g.Description, g.Currency, g.BudgetAmount,
 	)
 	return sendTelegramMessages(text)
 }
 
 func sendTelegramNotificationBlacklisted(g Gig, count int) error {
-	text := fmt.Sprintf("🚫 <b>Gig Diblacklist</b>\nBangkit %d kali, tidak akan dinotifikasi lagi.\n📌 <b>%s</b>\n👤 %s",
-		count, g.Title, g.Poster.FullName,
+	text := fmt.Sprintf("🚫 <b>GIG DIBLACKLIST</b>\nBangkit %d kali, tidak akan dinotifikasi lagi.\n📌 <b>%s</b>",
+		count, g.Title,
 	)
 	return sendTelegramMessages(text)
 }
 
 func main() {
 	telegramBotToken = os.Getenv("TELEGRAM_BOT_TOKEN")
+	telegramBotToken = "8879482087:AAEum68pH22IW8jM1Yo9aVF7MmJ5DOMadjs"
 	if telegramBotToken == "" {
 		log.Println("⚠️  TELEGRAM_BOT_TOKEN tidak diset. Notifikasi Telegram akan dinonaktifkan.")
 	}
