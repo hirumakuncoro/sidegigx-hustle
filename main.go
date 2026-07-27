@@ -58,6 +58,7 @@ type APIResponse struct {
 
 const (
 	apiURL           = "https://api.sidegigx.id/api/v1/gigs?feedMode=explore&sort=latest&page=1&limit=10"
+	appGigURL        = "https://app.sidegigx.id/gig"
 	pollInterval     = 1 * time.Minute
 	revivedThreshold = 2 // blacklist otomatis setelah gig muncul lagi sebanyak N kali
 )
@@ -204,6 +205,10 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func gigLink(id string) string {
+	return fmt.Sprintf("%s/%s", appGigURL, id)
 }
 
 func randomFakeIP() string {
@@ -422,16 +427,16 @@ func sendTelegramMessage(chatID string, text string) error {
 }
 
 func sendTelegramNotification(g Gig) error {
-	text := fmt.Sprintf("🆕 <b>GIG BARU!</b>\n<b>%s</b>\n\n%s\n%s %d",
-		g.Title, g.Description, g.Currency, g.BudgetAmount,
+	text := fmt.Sprintf("🆕 <b>GIG BARU!</b>\n<b>%s</b>\n\n%s\n%s %d\n%s",
+		g.Title, g.Description, g.Currency, g.BudgetAmount, gigLink(g.ID),
 	)
 	return sendTelegramMessages(text)
 }
 
 func sendTelegramNotificationRevived(g Gig, count int) error {
-	text := fmt.Sprintf("♻️ <b>GIG TERSEDIA LAGI!</b> (ke-%d, batas: %d)\n<b>%s</b>\n\n%s\n%s %d",
+	text := fmt.Sprintf("♻️ <b>GIG TERSEDIA LAGI!</b> (ke-%d, batas: %d)\n<b>%s</b>\n\n%s\n%s %d\n%s",
 		count, revivedThreshold,
-		g.Title, g.Description, g.Currency, g.BudgetAmount,
+		g.Title, g.Description, g.Currency, g.BudgetAmount, gigLink(g.ID),
 	)
 	return sendTelegramMessages(text)
 }
