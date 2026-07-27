@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"math/rand"
 )
 
 type Poster struct {
@@ -68,8 +69,18 @@ var telegramBotToken string
 
 var telegramChatIDs = []string{"1131652151"}
 
+func randomFakeIP() string {
+	return fmt.Sprintf("%d.%d.%d.%d",
+		rand.Intn(223)+1,
+		rand.Intn(256),
+		rand.Intn(256),
+		rand.Intn(256),
+	)
+}
+
 func fetchGigs() ([]Gig, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
+	fakeIP := randomFakeIP()
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
@@ -77,6 +88,8 @@ func fetchGigs() ([]Gig, error) {
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "SideGigX-Monitor/1.0")
+	req.Header.Set("X-Forwarded-For", fakeIP)
+	req.Header.Set("X-Real-IP", fakeIP)
 
 	resp, err := client.Do(req)
 	if err != nil {
