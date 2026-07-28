@@ -1,6 +1,7 @@
 services:
   gigwatch:
-    build: .
+    image: ${GIGWATCH_IMAGE:-ghcr.io/hirumakuncoro/sidegigx-hustle:latest}
+    pull_policy: always
     container_name: gigwatch
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}

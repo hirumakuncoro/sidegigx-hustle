@@ -4,7 +4,7 @@ Simple Go monitor untuk cek gig baru dari SideGigX dan kirim notifikasi Telegram
 
 ## Jalankan dengan Docker Compose
 
-Cara termudah menjalankan aplikasi:
+Cara termudah menjalankan aplikasi dari image GHCR:
 
 1. Buat file `.env` (atau set environment variable):
 ```sh
@@ -22,6 +22,18 @@ docker compose logs -f
 ```
 
 Data status gig disimpan di SQLite pada volume Docker `sidegigx-data`.
+
+Secara default compose memakai image:
+
+```sh
+ghcr.io/hirumakuncoro/sidegigx-hustle:latest
+```
+
+Jika perlu menjalankan tag image lain:
+
+```sh
+GIGWATCH_IMAGE=ghcr.io/hirumakuncoro/sidegigx-hustle:sha-<commit> docker compose up -d
+```
 
 ## Struktur Database
 
