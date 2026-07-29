@@ -58,12 +58,14 @@ type APIResponse struct {
 
 const (
 	apiURL           = "https://api.sidegigx.id/api/v1/gigs?feedMode=explore&sort=latest&page=1&limit=10"
+	claimURLFormat   = "https://api.sidegigx.id/api/v1/gigs/%s/claim"
 	appGigURL        = "https://app.sidegigx.id/gig"
 	pollInterval     = 30 * time.Second
 	revivedThreshold = 2 // blacklist otomatis setelah gig muncul lagi sebanyak N kali
 )
 
 var telegramBotToken string
+var sideGigXClaimToken string
 
 var telegramChatIDs = []string{"1131652151", "6494495144", "1809470127", "1375106823"}
 
@@ -256,6 +258,38 @@ func fetchGigs() ([]Gig, error) {
 	return apiResp.Data, nil
 }
 
+func claimGig(gigID string) error {
+	if sideGigXClaimToken == "" {
+		return fmt.Errorf("SIDEGIGX_CLAIM_TOKEN tidak diset")
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequest("POST", fmt.Sprintf(claimURLFormat, gigID), nil)
+	if err != nil {
+		return fmt.Errorf("gagal buat request claim: %w", err)
+	}
+	
+	fakeIP := randomFakeIP()
+
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+sideGigXClaimToken)
+	req.Header.Set("X-Forwarded-For", fakeIP)
+	req.Header.Set("X-Real-IP", fakeIP)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("gagal request claim: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	return nil
+}
+
 func checkForNewGigs(store *Store) {
 	now := time.Now().Format("2006-01-02 15:04:05")
 	fmt.Printf("\n[%s] 🔍 Mengecek gig terbaru...\n", now)
@@ -301,6 +335,11 @@ func checkForNewGigs(store *Store) {
 			}
 			newCount++
 			printNewGig(gig)
+			if err := claimGig(gig.ID); err != nil {
+				log.Printf("❌ Claim gagal untuk gig %s: %v\n", gig.ID, err)
+			} else {
+				log.Printf("✅ Claim berhasil untuk gig %s\n", gig.ID)
+			}
 			if err := sendTelegramNotification(gig); err != nil {
 				log.Printf("❌ Gagal kirim Telegram: %v\n", err)
 			}
@@ -445,6 +484,11 @@ func main() {
 	telegramBotToken = os.Getenv("TELEGRAM_BOT_TOKEN")
 	if telegramBotToken == "" {
 		log.Println("⚠️  TELEGRAM_BOT_TOKEN tidak diset. Notifikasi Telegram akan dinonaktifkan.")
+	}
+
+	sideGigXClaimToken = os.Getenv("SIDEGIGX_CLAIM_TOKEN")
+	if sideGigXClaimToken == "" {
+		log.Println("⚠️  SIDEGIGX_CLAIM_TOKEN tidak diset. Auto-claim akan gagal.")
 	}
 
 	dbPath := os.Getenv("DB_PATH")
