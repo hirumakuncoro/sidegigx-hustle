@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -57,15 +58,17 @@ type APIResponse struct {
 }
 
 const (
-	apiURL           = "https://api.sidegigx.id/api/v1/gigs?feedMode=explore&sort=latest&page=1&limit=10"
+	apiURL           = "https://api.sidegigx.id/api/v1/gigs?feedMode=explore&sort=latest&page=1&limit=5"
 	claimURLFormat   = "https://api.sidegigx.id/api/v1/gigs/%s/claim"
 	appGigURL        = "https://app.sidegigx.id/gig"
-	pollInterval     = 30 * time.Second
+	pollInterval     = 10 * time.Second
 	revivedThreshold = 2 // blacklist otomatis setelah gig muncul lagi sebanyak N kali
 )
 
 var telegramBotToken string
 var sideGigXClaimToken string
+var gigETagMu sync.Mutex
+var gigETag string
 
 var telegramChatIDs = []string{"1131652151", "6494495144", "1809470127", "1375106823"}
 
@@ -222,40 +225,65 @@ func randomFakeIP() string {
 	)
 }
 
-func fetchGigs() ([]Gig, error) {
+func getGigETag() string {
+	gigETagMu.Lock()
+	defer gigETagMu.Unlock()
+	return gigETag
+}
+
+func setGigETag(etag string) {
+	gigETagMu.Lock()
+	defer gigETagMu.Unlock()
+	gigETag = etag
+}
+
+func fetchGigs() ([]Gig, bool, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	fakeIP := randomFakeIP()
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("gagal buat request: %w", err)
+		return nil, false, fmt.Errorf("gagal buat request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "SideGigX-Monitor/1.0")
 	req.Header.Set("X-Forwarded-For", fakeIP)
 	req.Header.Set("X-Real-IP", fakeIP)
+	if etag := getGigETag(); etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
 
+	startedAt := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("gagal fetch API: %w", err)
+		return nil, false, fmt.Errorf("gagal fetch API: %w", err)
 	}
 	defer resp.Body.Close()
+	fmt.Printf("🌐 API response: status=%d latency=%dms\n", resp.StatusCode, time.Since(startedAt).Milliseconds())
+
+	if resp.StatusCode == http.StatusNotModified {
+		return nil, false, nil
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status tidak OK: %d", resp.StatusCode)
+		return nil, false, fmt.Errorf("status tidak OK: %d", resp.StatusCode)
+	}
+
+	if etag := resp.Header.Get("ETag"); etag != "" {
+		setGigETag(etag)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("gagal baca response body: %w", err)
+		return nil, false, fmt.Errorf("gagal baca response body: %w", err)
 	}
 
 	var apiResp APIResponse
 	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return nil, fmt.Errorf("gagal parse JSON: %w", err)
+		return nil, false, fmt.Errorf("gagal parse JSON: %w", err)
 	}
 
-	return apiResp.Data, nil
+	return apiResp.Data, true, nil
 }
 
 func claimGig(gigID string) error {
@@ -268,7 +296,7 @@ func claimGig(gigID string) error {
 	if err != nil {
 		return fmt.Errorf("gagal buat request claim: %w", err)
 	}
-	
+
 	fakeIP := randomFakeIP()
 
 	req.Header.Set("Accept", "application/json")
@@ -294,9 +322,13 @@ func checkForNewGigs(store *Store) {
 	now := time.Now().Format("2006-01-02 15:04:05")
 	fmt.Printf("\n[%s] 🔍 Mengecek gig terbaru...\n", now)
 
-	gigs, err := fetchGigs()
+	gigs, modified, err := fetchGigs()
 	if err != nil {
 		log.Printf("❌ Error: %v\n", err)
+		return
+	}
+	if !modified {
+		fmt.Println("✅ Tidak ada perubahan dari API (304 Not Modified).")
 		return
 	}
 
