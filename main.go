@@ -57,10 +57,31 @@ type APIResponse struct {
 	Data []Gig `json:"data"`
 }
 
+type TelegramUpdateResponse struct {
+	OK     bool             `json:"ok"`
+	Result []TelegramUpdate `json:"result"`
+}
+
+type TelegramUpdate struct {
+	UpdateID int             `json:"update_id"`
+	Message  TelegramMessage `json:"message"`
+}
+
+type TelegramMessage struct {
+	Text string       `json:"text"`
+	Chat TelegramChat `json:"chat"`
+}
+
+type TelegramChat struct {
+	ID int64 `json:"id"`
+}
+
 const (
 	apiURL           = "https://api.sidegigx.id/api/v1/gigs?feedMode=explore&sort=latest&page=1&limit=5"
 	claimURLFormat   = "https://api.sidegigx.id/api/v1/gigs/%s/claim"
 	appGigURL        = "https://app.sidegigx.id/gig"
+	welcomeImageURL  = "https://pub-425058631f8a4bf298715f06780fe7d2.r2.dev/Screenshot%202026-07-31%20at%2008.56.29.png"
+	supportURL       = "https://telegram.me/Hirumakun"
 	pollInterval     = 10 * time.Second
 	revivedThreshold = 2 // blacklist otomatis setelah gig muncul lagi sebanyak N kali
 )
@@ -497,6 +518,106 @@ func sendTelegramMessage(chatID string, text string) error {
 	return nil
 }
 
+func sendTelegramPhoto(chatID string, photoURL string, caption string) error {
+	apiEndpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", telegramBotToken)
+	values := url.Values{}
+	values.Set("chat_id", chatID)
+	values.Set("photo", photoURL)
+	values.Set("caption", caption)
+	values.Set("parse_mode", "HTML")
+
+	resp, err := http.PostForm(apiEndpoint, values)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%d %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+func pollTelegramCommands() {
+	offset := 0
+
+	for {
+		updates, err := fetchTelegramUpdates(offset)
+		if err != nil {
+			log.Printf("⚠️  Gagal ambil command Telegram: %v\n", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		for _, update := range updates {
+			offset = update.UpdateID + 1
+			handleTelegramMessage(update.Message)
+		}
+	}
+}
+
+func fetchTelegramUpdates(offset int) ([]TelegramUpdate, error) {
+	apiEndpoint := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates", telegramBotToken)
+	values := url.Values{}
+	values.Set("timeout", "30")
+	if offset > 0 {
+		values.Set("offset", fmt.Sprintf("%d", offset))
+	}
+
+	resp, err := http.PostForm(apiEndpoint, values)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("%d %s", resp.StatusCode, string(body))
+	}
+
+	var updateResp TelegramUpdateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&updateResp); err != nil {
+		return nil, err
+	}
+	if !updateResp.OK {
+		return nil, fmt.Errorf("telegram getUpdates returned not ok")
+	}
+
+	return updateResp.Result, nil
+}
+
+func handleTelegramMessage(message TelegramMessage) {
+	if message.Chat.ID == 0 {
+		return
+	}
+
+	text := strings.TrimSpace(message.Text)
+	if text == "" {
+		return
+	}
+
+	chatID := fmt.Sprintf("%d", message.Chat.ID)
+	if isStartCommand(text) {
+		caption := fmt.Sprintf("Selamat datang di SideGigX Monitor.\n\nBot ini akan mengirim info gig terbaru dan gig yang tersedia lagi.\n\nButuh bantuan atau mau request fitur? Chat: %s", supportURL)
+		if err := sendTelegramPhoto(chatID, welcomeImageURL, caption); err != nil {
+			log.Printf("❌ Gagal kirim welcome Telegram: %v\n", err)
+		}
+		return
+	}
+
+	reply := fmt.Sprintf("Halo! SideGigX Monitor sedang aktif.\n\nButuh bantuan atau mau request fitur? Chat: %s", supportURL)
+	if err := sendTelegramMessage(chatID, reply); err != nil {
+		log.Printf("❌ Gagal kirim balasan Telegram: %v\n", err)
+	}
+}
+
+func isStartCommand(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	return text == "/start" || strings.HasPrefix(text, "/start@")
+}
+
 func sendTelegramNotification(g Gig) error {
 	text := fmt.Sprintf("🆕 <b>GIG BARU!</b>\n<b>%s</b>\n\n%s\n%s %d\n%s",
 		g.Title, g.Description, g.Currency, g.BudgetAmount, gigLink(g.ID),
@@ -516,6 +637,8 @@ func main() {
 	telegramBotToken = os.Getenv("TELEGRAM_BOT_TOKEN")
 	if telegramBotToken == "" {
 		log.Println("⚠️  TELEGRAM_BOT_TOKEN tidak diset. Notifikasi Telegram akan dinonaktifkan.")
+	} else {
+		go pollTelegramCommands()
 	}
 
 	sideGigXClaimToken = os.Getenv("SIDEGIGX_CLAIM_TOKEN")
