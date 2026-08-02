@@ -618,17 +618,31 @@ func isStartCommand(text string) bool {
 	return text == "/start" || strings.HasPrefix(text, "/start@")
 }
 
+func shortDescription(description string) string {
+	description = strings.TrimSpace(description)
+	if description == "" {
+		return "-"
+	}
+
+	parts := strings.Split(strings.ReplaceAll(description, "\r\n", "\n"), "\n\n")
+	if len(parts) <= 2 {
+		return description
+	}
+
+	return strings.TrimSpace(strings.Join(parts[:2], "\n\n")) + "\n\n..."
+}
+
 func sendTelegramNotification(g Gig) error {
-	text := fmt.Sprintf("🆕 <b>GIG BARU!</b>\n<b>%s</b>\n\n%s\n%s %d\n%s",
-		g.Title, g.Description, g.Currency, g.BudgetAmount, gigLink(g.ID),
+	text := fmt.Sprintf("🆕 <b>GIG BARU!</b>\n<b>%s</b>\n\n%s\n\n%s %d\n%s",
+		g.Title, shortDescription(g.Description), g.Currency, g.BudgetAmount, gigLink(g.ID),
 	)
 	return sendTelegramMessages(text)
 }
 
 func sendTelegramNotificationRevived(g Gig, count int) error {
-	text := fmt.Sprintf("♻️ <b>GIG TERSEDIA LAGI!</b> (ke-%d, batas: %d)\n<b>%s</b>\n\n%s\n%s %d\n%s",
+	text := fmt.Sprintf("♻️ <b>GIG TERSEDIA LAGI!</b> (ke-%d, batas: %d)\n<b>%s</b>\n\n%s\n\n%s %d\n%s",
 		count, revivedThreshold,
-		g.Title, g.Description, g.Currency, g.BudgetAmount, gigLink(g.ID),
+		g.Title, shortDescription(g.Description), g.Currency, g.BudgetAmount, gigLink(g.ID),
 	)
 	return sendTelegramMessages(text)
 }
