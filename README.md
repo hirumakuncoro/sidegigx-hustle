@@ -9,6 +9,7 @@ Cara termudah menjalankan aplikasi dari image GHCR:
 1. Buat file `.env` (atau set environment variable):
 ```sh
 echo "TELEGRAM_BOT_TOKEN=token_anda_disini" > .env
+echo "SIDEGIGX_CLAIM_TOKENS=token_akun_1,token_akun_2" >> .env
 ```
 
 2. Jalankan di background:
@@ -56,6 +57,7 @@ Default file database adalah `sidegigx.db`. Bisa diubah dengan environment varia
 
 ```sh
 export TELEGRAM_BOT_TOKEN="<your-bot-token>"
+export SIDEGIGX_CLAIM_TOKENS="<claim-token-akun-1>,<claim-token-akun-2>"
 ```
 
 2. Build image:
@@ -69,6 +71,7 @@ docker build -t go-cek-gigs .
 ```sh
 docker run --rm \
   -e TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
+  -e SIDEGIGX_CLAIM_TOKENS="$SIDEGIGX_CLAIM_TOKENS" \
   -e DB_PATH=/data/sidegigx.db \
   -v sidegigx-data:/data \
   go-cek-gigs
@@ -80,6 +83,7 @@ docker run --rm \
 2. **Polling API**: Ambil 10 gig terbaru dari API setiap 1 menit.
 3. **Pengecekan Status Gig**:
    - **Gig Baru**: Belum pernah terlihat. Simpan ke SQLite, kirim notifikasi Telegram "Gig Baru!".
+     Jika `SIDEGIGX_CLAIM_TOKENS` diset, aplikasi akan auto-claim gig tersebut untuk semua akun di token list.
    - **Gig Aktif**: Masih ada dari cek sebelumnya. Biarkan.
    - **Gig Bangkit (Revived)**: Sempat hilang tapi muncul lagi. Kirim notifikasi "Gig Tersedia Lagi!".
 4. **Blacklist Otomatis**: Jika gig hilang-timbul (bangkit) 2 kali, masuk daftar blacklist tanpa notifikasi Telegram, lalu abaikan selamanya.
@@ -90,3 +94,4 @@ docker run --rm \
 - Aplikasi melakukan pengecekan (polling) API setiap 1 menit.
 - Container ini tidak membutuhkan port khusus karena aplikasi hanya melakukan polling API dan menulis log ke stdout.
 - Pastikan token bot Telegram valid agar notifikasi Telegram bekerja.
+- Untuk auto-claim multi-akun, isi `SIDEGIGX_CLAIM_TOKENS` dengan token dipisah koma. `SIDEGIGX_CLAIM_TOKEN` lama tetap didukung untuk satu akun.

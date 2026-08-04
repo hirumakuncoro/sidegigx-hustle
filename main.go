@@ -87,7 +87,7 @@ const (
 )
 
 var telegramBotToken string
-var sideGigXClaimToken string
+var sideGigXClaimTokens []string
 var gigETagMu sync.Mutex
 var gigETag string
 
@@ -307,9 +307,30 @@ func fetchGigs() ([]Gig, bool, error) {
 	return apiResp.Data, true, nil
 }
 
-func claimGig(gigID string) error {
-	if sideGigXClaimToken == "" {
-		return fmt.Errorf("SIDEGIGX_CLAIM_TOKEN tidak diset")
+func parseClaimTokens(value string) []string {
+	tokens := strings.Split(value, ",")
+	result := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		token = strings.TrimSpace(token)
+		if token != "" {
+			result = append(result, token)
+		}
+	}
+
+	return result
+}
+
+func loadClaimTokens() []string {
+	if value := os.Getenv("SIDEGIGX_CLAIM_TOKENS"); value != "" {
+		return parseClaimTokens(value)
+	}
+
+	return parseClaimTokens(os.Getenv("SIDEGIGX_CLAIM_TOKEN"))
+}
+
+func claimGig(gigID string, token string) error {
+	if token == "" {
+		return fmt.Errorf("claim token kosong")
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
@@ -321,7 +342,7 @@ func claimGig(gigID string) error {
 	fakeIP := randomFakeIP()
 
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+sideGigXClaimToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Forwarded-For", fakeIP)
 	req.Header.Set("X-Real-IP", fakeIP)
 
@@ -337,6 +358,26 @@ func claimGig(gigID string) error {
 	}
 
 	return nil
+}
+
+func claimGigWithAllAccounts(gigID string) {
+	if len(sideGigXClaimTokens) == 0 {
+		log.Printf("⚠️  Claim dilewati untuk gig %s: SIDEGIGX_CLAIM_TOKENS tidak diset\n", gigID)
+		return
+	}
+
+	for i, token := range sideGigXClaimTokens {
+		accountNo := i + 1
+		if err := claimGig(gigID, token); err != nil {
+			log.Printf("❌ Claim gagal akun #%d untuk gig %s: %v\n", accountNo, gigID, err)
+		} else {
+			log.Printf("✅ Claim berhasil akun #%d untuk gig %s\n", accountNo, gigID)
+		}
+
+		if i < len(sideGigXClaimTokens)-1 {
+			time.Sleep(time.Duration(300+rand.Intn(701)) * time.Millisecond)
+		}
+	}
 }
 
 func checkForNewGigs(store *Store) {
@@ -388,11 +429,7 @@ func checkForNewGigs(store *Store) {
 			}
 			newCount++
 			printNewGig(gig)
-			if err := claimGig(gig.ID); err != nil {
-				log.Printf("❌ Claim gagal untuk gig %s: %v\n", gig.ID, err)
-			} else {
-				log.Printf("✅ Claim berhasil untuk gig %s\n", gig.ID)
-			}
+			claimGigWithAllAccounts(gig.ID)
 			if err := sendTelegramNotification(gig); err != nil {
 				log.Printf("❌ Gagal kirim Telegram: %v\n", err)
 			}
@@ -655,9 +692,11 @@ func main() {
 		go pollTelegramCommands()
 	}
 
-	sideGigXClaimToken = os.Getenv("SIDEGIGX_CLAIM_TOKEN")
-	if sideGigXClaimToken == "" {
-		log.Println("⚠️  SIDEGIGX_CLAIM_TOKEN tidak diset. Auto-claim akan gagal.")
+	sideGigXClaimTokens = loadClaimTokens()
+	if len(sideGigXClaimTokens) == 0 {
+		log.Println("⚠️  SIDEGIGX_CLAIM_TOKENS tidak diset. Auto-claim akan dilewati.")
+	} else {
+		log.Printf("✅ Auto-claim aktif untuk %d akun.\n", len(sideGigXClaimTokens))
 	}
 
 	dbPath := os.Getenv("DB_PATH")

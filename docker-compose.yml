@@ -5,6 +5,7 @@ services:
     container_name: gigwatch
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - SIDEGIGX_CLAIM_TOKENS=${SIDEGIGX_CLAIM_TOKENS}
       - SIDEGIGX_CLAIM_TOKEN=${SIDEGIGX_CLAIM_TOKEN}
       - DB_PATH=/data/sidegigx.db
     volumes:
